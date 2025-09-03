@@ -185,9 +185,7 @@ func (p *Planner) createInputConverter() *compose.Lambda {
 		var chaptersCount int
 		if p.config.ContentGenerator != nil {
 			pcm := managers.NewPlannerContentManager(p.config.ContentGenerator.GetNovelDir())
-			// 保存最新聚合内容（即 content 生成的字符串）
-			_ = pcm.UpdateLatestContent(allChapters)
-
+			
 			// 获取章节数量
 			chaptersCount, _ = pcm.CountChapters()
 
@@ -206,7 +204,7 @@ func (p *Planner) createInputConverter() *compose.Lambda {
 					plan = "（暂无规划）"
 				}
 				b.WriteString("- ")
-				b.WriteString(r.Title)
+				b.WriteString(r.Chapter)
 				b.WriteString(": ")
 				b.WriteString(plan)
 				b.WriteString("\n")
