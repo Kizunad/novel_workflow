@@ -1,0 +1,405 @@
+package context
+
+import (
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/Kizunad/modular-workflow-v2/components/content/token"
+	content "github.com/Kizunad/modular-workflow-v2/components/content/utils"
+)
+
+// ContextManager 上下文管理器
+type ContextManager struct {
+	// 生成器（使用interface{}避免循环导入）
+	generator interface{}
+	
+	// Token管理
+	tokenBudget    *token.TokenBudgetManager
+	maxTokens      int
+	percentages    *token.TokenPercentages
+	
+	// 缓存
+	cache          *NovelContext
+	cacheEnabled   bool
+	cacheTTL       time.Duration
+	lastCacheTime  time.Time
+	cacheValid     bool
+	
+	// 同步
+	mutex sync.RWMutex
+	
+	// 配置
+	config *ContextConfig
+}
+
+// ContextConfig 上下文管理配置
+type ContextConfig struct {
+	// Token配置
+	MaxTokens       int                     `json:"max_tokens"`
+	TokenPercentages *token.TokenPercentages `json:"token_percentages"`
+	
+	// 缓存配置
+	EnableCache     bool          `json:"enable_cache"`
+	CacheTTL        time.Duration `json:"cache_ttl"`
+	
+	// 生成配置
+	GeneratorConfig *generators.GeneratorConfig `json:"generator_config"`
+	
+	// 高级选项
+	PreferRecent    bool    `json:"prefer_recent"`    // 优先使用最近内容
+	AllowPartial    bool    `json:"allow_partial"`    // 允许部分内容
+	StrictBudget    bool    `json:"strict_budget"`    // 严格Token预算
+	QualityThreshold float64 `json:"quality_threshold"` // 质量阈值
+}
+
+// DefaultContextConfig 默认上下文配置
+func DefaultContextConfig(novelDir string) *ContextConfig {
+	return &ContextConfig{
+		MaxTokens:        8000,
+		TokenPercentages: token.DefaultTokenPercentages(),
+		EnableCache:      true,
+		CacheTTL:         3 * time.Minute,
+		GeneratorConfig:  generators.DefaultGeneratorConfig(novelDir),
+		PreferRecent:     true,
+		AllowPartial:     false,
+		StrictBudget:     true,
+		QualityThreshold: 0.8,
+	}
+}
+
+// NewContextManager 创建上下文管理器
+func NewContextManager(generator generators.ContextAwareGenerator, config *ContextConfig) (*ContextManager, error) {
+	if generator == nil {
+		return nil, content.NewInvalidConfigError("generator cannot be nil", nil)
+	}
+	
+	if config == nil {
+		// 尝试从generator获取配置信息
+		config = DefaultContextConfig("")
+	}
+	
+	// 创建Token预算管理器
+	tokenBudget, err := token.NewTokenBudgetManager(config.MaxTokens, config.TokenPercentages)
+	if err != nil {
+		return nil, err
+	}
+	
+	manager := &ContextManager{
+		generator:     generator,
+		tokenBudget:   tokenBudget,
+		maxTokens:     config.MaxTokens,
+		percentages:   config.TokenPercentages,
+		cacheEnabled:  config.EnableCache,
+		cacheTTL:      config.CacheTTL,
+		config:        config,
+	}
+	
+	// 设置生成器的Token预算
+	generator.SetTokenBudget(tokenBudget)
+	
+	return manager, nil
+}
+
+// GetContext 获取上下文（优先使用缓存）
+func (cm *ContextManager) GetContext() (*NovelContext, error) {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	
+	// 检查缓存
+	if cm.isCacheValid() {
+		cachedContext := cm.cache.Clone()
+		cachedContext.SetCacheHit(true)
+		return cachedContext, nil
+	}
+	
+	// 生成新上下文
+	ctx, err := cm.generateFreshContext()
+	if err != nil {
+		return nil, err
+	}
+	
+	// 更新缓存
+	cm.updateCache(ctx)
+	
+	ctx.SetCacheHit(false)
+	return ctx, nil
+}
+
+// GetContextWithBudget 基于指定Token预算获取上下文
+func (cm *ContextManager) GetContextWithBudget(customBudget map[string]int) (*NovelContext, error) {
+	// 自定义预算不使用缓存
+	return cm.generator.GenerateContextWithBudget(customBudget)
+}
+
+// RefreshContext 强制刷新上下文
+func (cm *ContextManager) RefreshContext() (*NovelContext, error) {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	
+	// 清空缓存
+	cm.invalidateCache()
+	
+	// 生成新上下文
+	return cm.generateFreshContext()
+}
+
+// generateFreshContext 生成新的上下文
+func (cm *ContextManager) generateFreshContext() (*NovelContext, error) {
+	// 获取Token分配
+	allocation := cm.tokenBudget.GetAllocatedTokens()
+	
+	// 生成上下文
+	ctx, err := cm.generator.GenerateContextWithBudget(allocation)
+	if err != nil {
+		return nil, err
+	}
+	
+	// 验证上下文质量
+	if err := cm.validateContextQuality(ctx); err != nil {
+		if !cm.config.AllowPartial {
+			return nil, err
+		}
+		// 允许部分内容时，记录警告但继续返回
+	}
+	
+	return ctx, nil
+}
+
+// validateContextQuality 验证上下文质量
+func (cm *ContextManager) validateContextQuality(ctx *NovelContext) error {
+	if ctx == nil {
+		return content.NewInvalidConfigError("context is nil", nil)
+	}
+	
+	// 计算质量分数
+	score := cm.calculateQualityScore(ctx)
+	
+	if score < cm.config.QualityThreshold {
+		return content.NewInvalidConfigError(
+			fmt.Sprintf("context quality too low: %.2f < %.2f", 
+				score, cm.config.QualityThreshold), nil)
+	}
+	
+	return nil
+}
+
+// calculateQualityScore 计算质量分数
+func (cm *ContextManager) calculateQualityScore(ctx *NovelContext) float64 {
+	score := 0.0
+	maxScore := 5.0
+	
+	// 检查各组件是否存在
+	if ctx.Title != "" && ctx.Title != "未知小说" {
+		score += 1.0
+	}
+	if ctx.Worldview != "" && ctx.Worldview != "暂无世界观设定" {
+		score += 1.0
+	}
+	if ctx.Characters != "" {
+		score += 1.0
+	}
+	if ctx.Chapters != "" && ctx.Chapters != "暂无章节内容" {
+		score += 1.5 // 章节内容权重更高
+	}
+	if ctx.Summary != "" && ctx.Summary != "暂无章节摘要" {
+		score += 0.5
+	}
+	
+	return score / maxScore
+}
+
+// 缓存管理
+
+// isCacheValid 检查缓存是否有效
+func (cm *ContextManager) isCacheValid() bool {
+	if !cm.cacheEnabled || cm.cache == nil {
+		return false
+	}
+	
+	// 检查TTL
+	if time.Since(cm.lastCacheTime) > cm.cacheTTL {
+		return false
+	}
+	
+	return cm.cacheValid
+}
+
+// updateCache 更新缓存
+func (cm *ContextManager) updateCache(ctx *NovelContext) {
+	if !cm.cacheEnabled {
+		return
+	}
+	
+	cm.cache = ctx.Clone()
+	cm.lastCacheTime = time.Now()
+	cm.cacheValid = true
+}
+
+// invalidateCache 使缓存失效
+func (cm *ContextManager) invalidateCache() {
+	cm.cacheValid = false
+	cm.cache = nil
+}
+
+// EnableCache 启用缓存
+func (cm *ContextManager) EnableCache(ttl time.Duration) {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	
+	cm.cacheEnabled = true
+	cm.cacheTTL = ttl
+	cm.config.EnableCache = true
+	cm.config.CacheTTL = ttl
+}
+
+// DisableCache 禁用缓存
+func (cm *ContextManager) DisableCache() {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	
+	cm.cacheEnabled = false
+	cm.invalidateCache()
+	cm.config.EnableCache = false
+}
+
+// ClearCache 清空缓存
+func (cm *ContextManager) ClearCache() {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	
+	cm.invalidateCache()
+}
+
+// Token管理
+
+// UpdateTokenBudget 更新Token预算
+func (cm *ContextManager) UpdateTokenBudget(maxTokens int, percentages *token.TokenPercentages) error {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	
+	// 创建新的Token预算管理器
+	newBudget, err := token.NewTokenBudgetManager(maxTokens, percentages)
+	if err != nil {
+		return err
+	}
+	
+	// 更新内部状态
+	cm.tokenBudget = newBudget
+	cm.maxTokens = maxTokens
+	cm.percentages = percentages
+	
+	// 更新生成器
+	cm.generator.SetTokenBudget(newBudget)
+	
+	// 清空缓存（因为Token分配改变了）
+	cm.invalidateCache()
+	
+	return nil
+}
+
+// GetTokenBudget 获取Token预算管理器
+func (cm *ContextManager) GetTokenBudget() *token.TokenBudgetManager {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
+	
+	return cm.tokenBudget
+}
+
+// GetTokenAllocation 获取Token分配
+func (cm *ContextManager) GetTokenAllocation() map[string]int {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
+	
+	return cm.tokenBudget.GetAllocatedTokens()
+}
+
+// 配置管理
+
+// UpdateConfig 更新配置
+func (cm *ContextManager) UpdateConfig(newConfig *ContextConfig) error {
+	cm.mutex.Lock()
+	defer cm.mutex.Unlock()
+	
+	// 验证配置
+	if newConfig.MaxTokens <= 0 {
+		return content.NewInvalidConfigError("max tokens must be positive", nil)
+	}
+	
+	// 更新Token配置
+	if newConfig.MaxTokens != cm.config.MaxTokens ||
+		newConfig.TokenPercentages != cm.config.TokenPercentages {
+		
+		if err := cm.updateTokenBudgetInternal(
+			newConfig.MaxTokens, newConfig.TokenPercentages); err != nil {
+			return err
+		}
+	}
+	
+	// 更新缓存配置
+	cm.cacheEnabled = newConfig.EnableCache
+	cm.cacheTTL = newConfig.CacheTTL
+	
+	// 如果缓存被禁用，清空缓存
+	if !cm.cacheEnabled {
+		cm.invalidateCache()
+	}
+	
+	cm.config = newConfig
+	
+	return nil
+}
+
+// updateTokenBudgetInternal 内部更新Token预算（不加锁）
+func (cm *ContextManager) updateTokenBudgetInternal(maxTokens int, percentages *token.TokenPercentages) error {
+	newBudget, err := token.NewTokenBudgetManager(maxTokens, percentages)
+	if err != nil {
+		return err
+	}
+	
+	cm.tokenBudget = newBudget
+	cm.maxTokens = maxTokens
+	cm.percentages = percentages
+	cm.generator.SetTokenBudget(newBudget)
+	cm.invalidateCache()
+	
+	return nil
+}
+
+// GetConfig 获取配置
+func (cm *ContextManager) GetConfig() *ContextConfig {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
+	
+	// 返回配置的副本
+	configCopy := *cm.config
+	return &configCopy
+}
+
+// 状态查询
+
+// GetCacheStats 获取缓存统计
+func (cm *ContextManager) GetCacheStats() map[string]interface{} {
+	cm.mutex.RLock()
+	defer cm.mutex.RUnlock()
+	
+	stats := map[string]interface{}{
+		"enabled":        cm.cacheEnabled,
+		"valid":          cm.cacheValid,
+		"ttl_seconds":    cm.cacheTTL.Seconds(),
+		"has_cache":      cm.cache != nil,
+	}
+	
+	if cm.cache != nil {
+		stats["cache_age_seconds"] = time.Since(cm.lastCacheTime).Seconds()
+		stats["expires_in_seconds"] = cm.cacheTTL.Seconds() - time.Since(cm.lastCacheTime).Seconds()
+		stats["token_count"] = cm.cache.Metadata.TotalTokens
+	}
+	
+	return stats
+}
+
+// IsHealthy 检查管理器是否健康
+func (cm *ContextManager) IsHealthy() bool {
+	return cm.generator != nil && cm.tokenBudget != nil
+}

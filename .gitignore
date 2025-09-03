@@ -1,0 +1,7 @@
+/vendor
+/prompts
+/scripts
+/.claude
+go.sum
+config.yaml
+novel
