@@ -6,7 +6,7 @@ require (
 	github.com/Kizunad/modular-chroma v0.0.0-20250824221019-51a9c7bc5540
 	github.com/Kizunad/modular-embedder v0.0.0-20250824124201-edc3ef896df7
 	github.com/bytedance/sonic v1.14.0
-	github.com/cloudwego/eino v0.4.7
+	github.com/cloudwego/eino v0.4.8
 	github.com/cloudwego/eino-ext/components/model/ollama v0.1.2
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/spf13/viper v1.20.1

@@ -96,22 +96,22 @@ func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		p.logger.Error("健康检查请求失败", 
-			zap.Error(err), 
+		p.logger.Error("健康检查请求失败",
+			zap.Error(err),
 			zap.String("url", fullHealthURL))
 		return fmt.Errorf("openai不可用: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// 记录响应详情
-	p.logger.Debug("健康检查响应", 
-		zap.Int("status_code", resp.StatusCode), 
+	p.logger.Debug("健康检查响应",
+		zap.Int("status_code", resp.StatusCode),
 		zap.String("url", fullHealthURL))
 
 	// 简单判断：200 = 可用，其他 = 不可用
 	if resp.StatusCode != 200 {
-		p.logger.Error("健康检查状态码错误", 
-			zap.Int("status_code", resp.StatusCode), 
+		p.logger.Error("健康检查状态码错误",
+			zap.Int("status_code", resp.StatusCode),
 			zap.String("url", p.config.BaseURL+"/api/status"))
 		return fmt.Errorf("openai不可用: 状态码 %d", resp.StatusCode)
 	}
@@ -124,4 +124,3 @@ func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
 func (p *OpenAIProvider) GetConfig() *config.OpenAIConfig {
 	return p.config
 }
-

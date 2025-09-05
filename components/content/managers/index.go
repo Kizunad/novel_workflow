@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Kizunad/modular-workflow-v2/components/content/token"
 	content "github.com/Kizunad/modular-workflow-v2/components/content/utils"
@@ -292,4 +293,87 @@ func (ir *IndexReader) FormatIndexSummary() string {
 	}
 	
 	return "《" + title + "》\n\n" + summary
+}
+
+// IndexManager 索引管理器，提供写入功能，兼容旧的 summarizer.IndexManager 接口
+type IndexManager struct {
+	*IndexReader
+}
+
+// NewIndexManager 创建索引管理器，兼容旧的 summarizer.NewIndexManager 接口
+func NewIndexManager(novelDir string) *IndexManager {
+	return &IndexManager{
+		IndexReader: NewIndexReader(novelDir),
+	}
+}
+
+// GetIndexPath 获取索引文件路径，兼容旧的 summarizer.IndexManager 接口
+func (im *IndexManager) GetIndexPath() string {
+	return im.indexPath
+}
+
+// UpdateSummary 更新章节摘要到索引文件，兼容旧的 summarizer.IndexManager 接口
+func (im *IndexManager) UpdateSummary(summary ChapterSummary) error {
+	// 重新加载最新数据
+	im.load()
+	
+	// 初始化索引数据结构
+	if im.indexData == nil {
+		im.indexData = &IndexJSON{
+			Version:    "1.0",
+			LastUpdate: time.Now().Format(time.RFC3339),
+			Chapters:   0,
+			Summaries:  make([]ChapterSummary, 0),
+		}
+	}
+	
+	// 查找是否已存在相同章节ID的摘要
+	existingIndex := -1
+	for i, existingSummary := range im.indexData.Summaries {
+		if existingSummary.ChapterID == summary.ChapterID {
+			existingIndex = i
+			break
+		}
+	}
+	
+	// 处理时间戳格式兼容性（summary_crud_tool.go 使用 time.Time，而这里使用 string）
+	timestampStr := summary.Timestamp
+	if timestampStr == "" {
+		timestampStr = time.Now().Format(time.RFC3339)
+	}
+	
+	// 创建标准化的摘要对象
+	standardSummary := ChapterSummary{
+		ChapterID: summary.ChapterID,
+		Title:     summary.Title,
+		Summary:   summary.Summary,
+		WordCount: summary.WordCount,
+		Timestamp: timestampStr,
+	}
+	
+	// 更新或添加摘要
+	if existingIndex >= 0 {
+		// 更新现有摘要
+		im.indexData.Summaries[existingIndex] = standardSummary
+	} else {
+		// 添加新摘要
+		im.indexData.Summaries = append(im.indexData.Summaries, standardSummary)
+		im.indexData.Chapters = len(im.indexData.Summaries)
+	}
+	
+	// 更新最后修改时间
+	im.indexData.LastUpdate = time.Now().Format(time.RFC3339)
+	
+	// 序列化为JSON
+	jsonData, err := json.MarshalIndent(im.indexData, "", "  ")
+	if err != nil {
+		return content.NewInvalidConfigError("failed to marshal index data", err)
+	}
+	
+	// 保存到文件
+	if err := im.BaseFileManager.Save(string(jsonData)); err != nil {
+		return err
+	}
+	
+	return nil
 }

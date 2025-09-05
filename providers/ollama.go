@@ -120,4 +120,3 @@ func (o *OllamaProvider) HealthCheck(ctx context.Context) error {
 func (o *OllamaProvider) GetConfig() *config.OllamaConfig {
 	return o.config
 }
-

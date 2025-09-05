@@ -217,3 +217,70 @@ func (cm *ChapterManager) GetChapterMetadata() map[string]interface{} {
 	
 	return metadata
 }
+
+// WriteChapter 写入新章节（基于当前章节数量自动递增）
+func (cm *ChapterManager) WriteChapter(title, content string) (string, error) {
+	// 获取下一个章节编号
+	nextChapterNum := cm.GetChapterCount() + 1
+	chapterID := strconv.Itoa(nextChapterNum)
+	
+	return cm.WriteChapterWithID(chapterID, title, content)
+}
+
+// WriteChapterWithID 写入指定ID的章节
+func (cm *ChapterManager) WriteChapterWithID(chapterID, title, content string) (string, error) {
+	// 构建章节文件路径
+	chapterFileName := "example_chapter_" + chapterID + ".json"
+	chapterPath := filepath.Join(cm.novelDir, chapterFileName)
+	
+	// 确保目录存在
+	if err := os.MkdirAll(cm.novelDir, 0755); err != nil {
+		return "", err
+	}
+	
+	// 将内容分段处理（简化实现：按段落分割）
+	paragraphs := strings.Split(strings.TrimSpace(content), "\n\n")
+	var contentArray []struct {
+		ParagraphID int    `json:"paragraph_id"`
+		Text        string `json:"text"`
+	}
+	
+	for i, paragraph := range paragraphs {
+		if strings.TrimSpace(paragraph) != "" {
+			contentArray = append(contentArray, struct {
+				ParagraphID int    `json:"paragraph_id"`
+				Text        string `json:"text"`
+			}{
+				ParagraphID: i + 1,
+				Text:        strings.TrimSpace(paragraph),
+			})
+		}
+	}
+	
+	// 构建章节数据
+	chapterData := ChapterData{
+		ChapterID: chapterID,
+		Title:     title,
+		Content:   contentArray,
+	}
+	
+	// 序列化为JSON
+	jsonData, err := json.MarshalIndent(chapterData, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	
+	// 写入文件
+	if err := os.WriteFile(chapterPath, jsonData, 0644); err != nil {
+		return "", err
+	}
+	
+	return chapterPath, nil
+}
+
+// UpdateChapter 更新指定章节
+func (cm *ChapterManager) UpdateChapter(chapterNum int, title, content string) error {
+	chapterID := strconv.Itoa(chapterNum)
+	_, err := cm.WriteChapterWithID(chapterID, title, content)
+	return err
+}

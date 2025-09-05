@@ -38,15 +38,15 @@ type PlannerContentManager struct {
 // NewPlannerContentManager 创建规划内容管理器
 func NewPlannerContentManager(novelDir string) *PlannerContentManager {
 	plannerPath := filepath.Join(novelDir, "planner.json")
-	
+
 	manager := &PlannerContentManager{
 		BaseFileManager: NewBaseFileManager(plannerPath),
 		novelDir:        novelDir,
 	}
-	
+
 	// 尝试加载现有状态
 	manager.load()
-	
+
 	return manager
 }
 
@@ -65,7 +65,7 @@ func (pcm *PlannerContentManager) load() {
 			pcm.state = &state
 		}
 	}
-	
+
 	// 如果加载失败或文件不存在，初始化默认状态
 	if pcm.state == nil {
 		pcm.state = &PlannerState{
@@ -82,7 +82,7 @@ func (pcm *PlannerContentManager) Load() (*PlannerState, error) {
 	if pcm.IsModified() {
 		pcm.load()
 	}
-	
+
 	return pcm.state, nil
 }
 
@@ -91,24 +91,24 @@ func (pcm *PlannerContentManager) Save(ps *PlannerState) error {
 	if ps == nil {
 		return utils.NewInvalidConfigError("planner state cannot be nil", nil)
 	}
-	
+
 	// 更新时间戳
 	ps.UpdatedAt = time.Now().Format(time.RFC3339)
-	
+
 	// 序列化为JSON
 	data, err := json.MarshalIndent(ps, "", "  ")
 	if err != nil {
 		return utils.NewFileWriteError(pcm.GetPath(), err)
 	}
-	
+
 	// 保存到文件
 	if err := pcm.BaseFileManager.Save(string(data)); err != nil {
 		return err
 	}
-	
+
 	// 更新内存状态
 	pcm.state = ps
-	
+
 	return nil
 }
 
@@ -120,36 +120,38 @@ func (pcm *PlannerContentManager) CountChapters() (int, error) {
 }
 
 // UpsertPlan 插入或更新规划
-func (pcm *PlannerContentManager) UpsertPlan(chapter, plan string) error {
+func (pcm *PlannerContentManager) UpsertPlan(chapter, plan, content string, finished bool) error {
 	if chapter == "" {
 		return utils.NewInvalidConfigError("plan chapter cannot be empty", nil)
 	}
-	
+
 	state, err := pcm.Load()
 	if err != nil {
 		return err
 	}
-	
+
 	// 查找是否已存在该章节的规划
 	found := false
 	for i, entry := range state.Plans {
 		if entry.Chapter == chapter {
 			state.Plans[i].Plan = plan
+			state.Plans[i].Content = content
+			state.Plans[i].Finished = finished
 			found = true
 			break
 		}
 	}
-	
+
 	// 如果不存在，添加新的规划
 	if !found {
 		state.Plans = append(state.Plans, PlanEntry{
 			Chapter:  chapter,
 			Plan:     plan,
-			Content:  "",
+			Content:  content,
 			Finished: false,
 		})
 	}
-	
+
 	return pcm.Save(state)
 }
 
@@ -159,13 +161,13 @@ func (pcm *PlannerContentManager) GetPlan(chapter string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	
+
 	for _, entry := range state.Plans {
 		if entry.Chapter == chapter {
 			return entry.Plan, true
 		}
 	}
-	
+
 	return "", false
 }
 
@@ -175,13 +177,13 @@ func (pcm *PlannerContentManager) GetPlanEntry(chapter string) (*PlanEntry, bool
 	if err != nil {
 		return nil, false
 	}
-	
+
 	for _, entry := range state.Plans {
 		if entry.Chapter == chapter {
 			return &entry, true
 		}
 	}
-	
+
 	return nil, false
 }
 
@@ -191,15 +193,15 @@ func (pcm *PlannerContentManager) GetAllPlans() []PlanEntry {
 	if err != nil {
 		return []PlanEntry{}
 	}
-	
+
 	// 按标题排序
 	plans := make([]PlanEntry, len(state.Plans))
 	copy(plans, state.Plans)
-	
+
 	sort.Slice(plans, func(i, j int) bool {
 		return plans[i].Chapter < plans[j].Chapter
 	})
-	
+
 	return plans
 }
 
@@ -209,7 +211,7 @@ func (pcm *PlannerContentManager) GetPlansWithTokenLimit(maxTokens int) (string,
 	if len(plans) == 0 {
 		return "", 0
 	}
-	
+
 	// 构建规划文本
 	var planBuilder strings.Builder
 	for i, entry := range plans {
@@ -231,20 +233,17 @@ func (pcm *PlannerContentManager) GetPlansWithTokenLimit(maxTokens int) (string,
 			planBuilder.WriteString("未完成")
 		}
 	}
-	
+
 	planText := planBuilder.String()
-	
+
 	// 如果有TokenBudget，使用正确的组件名
 	if pcm.GetTokenBudget() != nil {
 		return pcm.GetTokenBudget().TruncateToTokenLimit(planText, "plan")
 	}
-	
+
 	// 否则使用基础的截断逻辑
 	return pcm.TruncateToLimit(planText, maxTokens)
 }
-
-
-
 
 // DeletePlan 删除指定章节的规划
 func (pcm *PlannerContentManager) DeletePlan(chapter string) error {
@@ -252,7 +251,7 @@ func (pcm *PlannerContentManager) DeletePlan(chapter string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// 查找并删除
 	for i, entry := range state.Plans {
 		if entry.Chapter == chapter {
@@ -260,7 +259,7 @@ func (pcm *PlannerContentManager) DeletePlan(chapter string) error {
 			return pcm.Save(state)
 		}
 	}
-	
+
 	// 如果没找到，不报错
 	return nil
 }
@@ -271,14 +270,14 @@ func (pcm *PlannerContentManager) UpdatePlanContent(chapter, content string) err
 	if err != nil {
 		return err
 	}
-	
+
 	for i, entry := range state.Plans {
 		if entry.Chapter == chapter {
 			state.Plans[i].Content = content
 			return pcm.Save(state)
 		}
 	}
-	
+
 	return utils.NewInvalidConfigError("plan entry not found: "+chapter, nil)
 }
 
@@ -288,14 +287,14 @@ func (pcm *PlannerContentManager) SetPlanFinished(chapter string, finished bool)
 	if err != nil {
 		return err
 	}
-	
+
 	for i, entry := range state.Plans {
 		if entry.Chapter == chapter {
 			state.Plans[i].Finished = finished
 			return pcm.Save(state)
 		}
 	}
-	
+
 	return utils.NewInvalidConfigError("plan entry not found: "+chapter, nil)
 }
 
@@ -303,14 +302,27 @@ func (pcm *PlannerContentManager) SetPlanFinished(chapter string, finished bool)
 func (pcm *PlannerContentManager) GetUnfinishedPlans() []PlanEntry {
 	plans := pcm.GetAllPlans()
 	var unfinished []PlanEntry
-	
+
 	for _, plan := range plans {
 		if !plan.Finished {
 			unfinished = append(unfinished, plan)
 		}
 	}
-	
+
 	return unfinished
+}
+
+// GetFirstUnfinishedPlan 获取第一个未完成的计划
+func (pcm *PlannerContentManager) GetFirstUnfinishedPlan() (*PlanEntry, bool) {
+	plans := pcm.GetAllPlans()
+	
+	for _, plan := range plans {
+		if !plan.Finished {
+			return &plan, true
+		}
+	}
+	
+	return nil, false
 }
 
 // ClearAllPlans 清空所有规划
@@ -319,9 +331,9 @@ func (pcm *PlannerContentManager) ClearAllPlans() error {
 	if err != nil {
 		return err
 	}
-	
+
 	state.Plans = []PlanEntry{}
-	
+
 	return pcm.Save(state)
 }
 
@@ -329,16 +341,16 @@ func (pcm *PlannerContentManager) ClearAllPlans() error {
 func (pcm *PlannerContentManager) GetPlannerMetadata() map[string]interface{} {
 	info := pcm.GetFileInfo()
 	state, _ := pcm.Load()
-	
+
 	metadata := map[string]interface{}{
-		"path":         info.Path,
-		"exists":       info.Exists,
-		"mod_time":     info.ModTime,
-		"token_count":  pcm.GetTokenCount(),
-		"plan_count": len(state.Plans),
+		"path":        info.Path,
+		"exists":      info.Exists,
+		"mod_time":    info.ModTime,
+		"token_count": pcm.GetTokenCount(),
+		"plan_count":  len(state.Plans),
 		"updated_at":  state.UpdatedAt,
 	}
-	
+
 	if pcm.GetTokenBudget() != nil {
 		estimated := pcm.EstimateTokens()
 		budget := pcm.GetTokenBudget().GetTokenAllocation("plan")
@@ -346,7 +358,7 @@ func (pcm *PlannerContentManager) GetPlannerMetadata() map[string]interface{} {
 		metadata["token_budget"] = budget
 		metadata["within_budget"] = estimated <= budget
 	}
-	
+
 	return metadata
 }
 
@@ -356,7 +368,7 @@ func (pcm *PlannerContentManager) ValidatePlanner() error {
 	if err != nil {
 		return err
 	}
-	
+
 	// 检查规划数据的一致性
 	for i, entry := range state.Plans {
 		if entry.Chapter == "" {
@@ -364,7 +376,7 @@ func (pcm *PlannerContentManager) ValidatePlanner() error {
 				"plan entry at index "+strconv.Itoa(i)+" has empty chapter", nil)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -374,10 +386,10 @@ func (pcm *PlannerContentManager) GetPlansSummary() string {
 	if len(plans) == 0 {
 		return "暂无规划内容"
 	}
-	
+
 	var summaryBuilder strings.Builder
 	summaryBuilder.WriteString("已有规划: ")
-	
+
 	chapters := make([]string, len(plans))
 	for i, plan := range plans {
 		status := "未完成"
@@ -386,9 +398,9 @@ func (pcm *PlannerContentManager) GetPlansSummary() string {
 		}
 		chapters[i] = fmt.Sprintf("%s(%s)", plan.Chapter, status)
 	}
-	
+
 	summaryBuilder.WriteString(strings.Join(chapters, ", "))
-	
+
 	return summaryBuilder.String()
 }
 
@@ -398,10 +410,10 @@ func (pcm *PlannerContentManager) FormatPlansForContext() string {
 	if len(plans) == 0 {
 		return "暂无章节规划"
 	}
-	
+
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString("章节规划:\n\n")
-	
+
 	for _, entry := range plans {
 		contextBuilder.WriteString("【")
 		contextBuilder.WriteString(entry.Chapter)
@@ -426,6 +438,6 @@ func (pcm *PlannerContentManager) FormatPlansForContext() string {
 		}
 		contextBuilder.WriteString("\n\n")
 	}
-	
+
 	return strings.TrimSpace(contextBuilder.String())
 }
